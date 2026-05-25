@@ -2,16 +2,18 @@ from __future__ import annotations
 
 from typing import TypedDict
 
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, END
 
-from .rag_engine import RAGEngine
+from .rag_engine import RAGEngine, _make_llm_and_embeddings
 
 
 def _web_search(query: str) -> str:
     """Search the web via DuckDuckGo (no API key required)."""
     try:
-        from duckduckgo_search import DDGS
+        try:
+            from ddgs import DDGS
+        except ImportError:
+            from duckduckgo_search import DDGS
         with DDGS() as ddgs:
             results = list(ddgs.text(query, max_results=5))
         if not results:
@@ -51,12 +53,14 @@ class ResearchAgent:
     Graph: document_research → web_research → synthesize → END
     """
 
-    def __init__(self, api_key: str, rag_engine: RAGEngine | None = None):
-        self.llm = ChatGoogleGenerativeAI(
-            model="gemini-1.5-flash",
-            google_api_key=api_key,
-            temperature=0.3,
-        )
+    def __init__(
+        self,
+        api_key: str,
+        provider: str = "gemini",
+        model: str = "gemini-2.0-flash",
+        rag_engine: RAGEngine | None = None,
+    ):
+        self.llm, _ = _make_llm_and_embeddings(provider, api_key, model)
         self.rag_engine = rag_engine
         self._graph = self._build_graph()
 
@@ -87,8 +91,18 @@ class ResearchAgent:
         context = "\n\n---\n\n".join(parts) if parts else "No information available."
         prompt = _SYNTHESIS_PROMPT.format(query=state["query"], context=context)
 
-        response = self.llm.invoke([("human", prompt)])
-        state["final_report"] = response.content
+        try:
+            response = self.llm.invoke([("human", prompt)])
+            state["final_report"] = response.content
+        except Exception as exc:
+            msg = str(exc)
+            if "429" in msg or "quota" in msg.lower():
+                state["final_report"] = (
+                    "⚠️ **API quota exceeded.** Switch to Groq in the sidebar "
+                    "(free, no quota issues — get key at console.groq.com)."
+                )
+            else:
+                state["final_report"] = f"❌ Error during synthesis: {exc}"
         return state
 
     def _build_graph(self):

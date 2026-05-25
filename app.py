@@ -5,6 +5,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 import streamlit as st
 
 # Page config must be the very first Streamlit call
@@ -70,46 +72,80 @@ def _init_state() -> None:
             st.session_state[k] = v
 
 
-def _get_api_key() -> str:
-    key = os.environ.get("GOOGLE_API_KEY", "")
+_PROVIDERS = {
+    "Google Gemini": {
+        "key": "gemini",
+        "models": ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-pro"],
+        "placeholder": "AIza...",
+        "env_var": "GOOGLE_API_KEY",
+        "help": "Free tier — get key at aistudio.google.com/app/apikey",
+        "link": "https://aistudio.google.com/app/apikey",
+    },
+    "Groq (LLaMA — recommended)": {
+        "key": "groq",
+        "models": ["llama-3.3-70b-versatile", "llama3-70b-8192", "mixtral-8x7b-32768"],
+        "placeholder": "gsk_...",
+        "env_var": "GROQ_API_KEY",
+        "help": "Free tier — 14,400 req/day — get key at console.groq.com",
+        "link": "https://console.groq.com/keys",
+    },
+}
+
+
+def _get_env_key(env_var: str) -> str:
+    key = os.environ.get(env_var, "")
     if not key:
         try:
-            key = st.secrets.get("GOOGLE_API_KEY", "")  # type: ignore[attr-defined]
+            key = st.secrets.get(env_var, "")  # type: ignore[attr-defined]
         except Exception:
             pass
     return key
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
-def render_sidebar() -> str:
+def render_sidebar() -> tuple[str, str, str]:
+    """Return (api_key, provider_key, model)."""
     with st.sidebar:
         st.markdown("## 🧠 DocuMind AI")
         st.markdown(
             '<span class="badge">RAG</span>'
             '<span class="badge">LangChain</span>'
             '<span class="badge">LangGraph</span>'
-            '<span class="badge">Gemini</span>'
             '<span class="badge">ChromaDB</span>',
             unsafe_allow_html=True,
         )
         st.divider()
 
-        # API Key section
-        st.markdown("### ⚙️ API Key")
-        api_key = _get_api_key()
+        # Provider + model selection
+        st.markdown("### 🤖 LLM Provider")
+        provider_name = st.selectbox(
+            "Provider",
+            list(_PROVIDERS.keys()),
+            index=1,  # default to Groq
+            label_visibility="collapsed",
+        )
+        cfg = _PROVIDERS[provider_name]
+        provider_key = cfg["key"]
+
+        model = st.selectbox("Model", cfg["models"], label_visibility="collapsed")
+
+        # API Key
+        st.markdown("### 🔑 API Key")
+        api_key = _get_env_key(cfg["env_var"])
         if not api_key:
             api_key = st.text_input(
-                "Google Gemini API Key",
+                "API Key",
                 type="password",
-                placeholder="AIza...",
-                help="Free — 1,500 requests/day at Google AI Studio",
+                placeholder=cfg["placeholder"],
+                help=cfg["help"],
+                label_visibility="collapsed",
             )
             if api_key:
-                os.environ["GOOGLE_API_KEY"] = api_key
+                os.environ[cfg["env_var"]] = api_key
             else:
-                st.caption("👉 [Get free API key →](https://aistudio.google.com/app/apikey)")
+                st.caption(f"👉 [Get free key →]({cfg['link']})")
         else:
-            st.success("✅ API key loaded", icon="🔑")
+            st.success(f"✅ {provider_name} key loaded", icon="🔑")
 
         st.divider()
 
@@ -124,7 +160,7 @@ def render_sidebar() -> str:
 
         if uploads and api_key:
             if st.button("⚡ Process Documents", type="primary", use_container_width=True):
-                _process_uploads(uploads, api_key)
+                _process_uploads(uploads, api_key, provider_key, model)
         elif uploads and not api_key:
             st.caption("Enter API key above to process documents.")
 
@@ -147,10 +183,10 @@ def render_sidebar() -> str:
             st.session_state.messages = []
             st.rerun()
 
-    return api_key
+    return api_key, provider_key, model
 
 
-def _process_uploads(uploads, api_key: str) -> None:
+def _process_uploads(uploads, api_key: str, provider: str, model: str) -> None:
     processor = DocumentProcessor()
     all_chunks = []
     bar = st.sidebar.progress(0, text="Loading…")
@@ -168,11 +204,13 @@ def _process_uploads(uploads, api_key: str) -> None:
             bar.progress((i + 1) / len(uploads), text=f"Processed: {f.name}")
 
         bar.progress(1.0, text="Building vector index…")
-        rag = RAGEngine(api_key=api_key)
+        rag = RAGEngine(api_key=api_key, provider=provider, model=model)
         rag.add_documents(all_chunks)
 
         st.session_state.rag_engine = rag
-        st.session_state.agent = ResearchAgent(api_key=api_key, rag_engine=rag)
+        st.session_state.agent = ResearchAgent(
+            api_key=api_key, provider=provider, model=model, rag_engine=rag
+        )
         st.session_state.doc_names = [f.name for f in uploads]
         st.session_state.docs_ready = True
         bar.empty()
@@ -260,11 +298,11 @@ def _render_feature_overview() -> None:
         )
 
     st.markdown("---")
-    st.markdown("**Tech stack:** `LangChain` · `LangGraph` · `ChromaDB` · `Google Gemini` · `Streamlit`")
+    st.markdown("**Tech stack:** `LangChain` · `LangGraph` · `ChromaDB` · `Gemini / Groq` · `Streamlit`")
 
 
 # ── Tab 2: Research Agents ────────────────────────────────────────────────────
-def tab_research(api_key: str) -> None:
+def tab_research(api_key: str, provider: str, model: str) -> None:
     st.markdown("### 🔬 Multi-Agent Research Pipeline")
     st.markdown(
         "Powered by **LangGraph** — three specialized agents collaborate:\n"
@@ -272,7 +310,7 @@ def tab_research(api_key: str) -> None:
     )
 
     if not api_key:
-        st.warning("Please enter your Gemini API key in the sidebar.")
+        st.warning("Please enter your API key in the sidebar.")
         return
 
     query = st.text_input(
@@ -307,7 +345,7 @@ def tab_research(api_key: str) -> None:
                         query, use_docs=use_docs, use_web=use_web
                     )
                 else:
-                    tmp_agent = ResearchAgent(api_key=api_key)
+                    tmp_agent = ResearchAgent(api_key=api_key, provider=provider, model=model)
                     report = tmp_agent.research(query, use_docs=False, use_web=use_web)
             except Exception as exc:
                 st.error(f"Agent error: {exc}")
@@ -356,6 +394,7 @@ def tab_summarize() -> None:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main() -> None:
+    load_dotenv(override=True)  # re-read .env on every render so new keys are picked up
     _init_state()
 
     st.markdown('<div class="hero-title">🧠 DocuMind AI</div>', unsafe_allow_html=True)
@@ -366,13 +405,13 @@ def main() -> None:
         unsafe_allow_html=True,
     )
 
-    api_key = render_sidebar()
+    api_key, provider, model = render_sidebar()
 
     t1, t2, t3 = st.tabs(["💬 Document Chat", "🔬 Research Agents", "📝 Summarize"])
     with t1:
         tab_chat()
     with t2:
-        tab_research(api_key)
+        tab_research(api_key, provider, model)
     with t3:
         tab_summarize()
 
