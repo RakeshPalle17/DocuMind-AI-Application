@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
+
 import sys
 import tempfile
 from pathlib import Path
