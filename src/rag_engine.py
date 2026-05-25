@@ -48,8 +48,8 @@ class RAGEngine:
         self.vectorstore = None
 
     def add_documents(self, documents: list[Document]) -> None:
-        from langchain_chroma import Chroma
-        self.vectorstore = Chroma.from_documents(
+        from langchain_community.vectorstores import FAISS
+        self.vectorstore = FAISS.from_documents(
             documents=documents,
             embedding=self.embeddings,
         )
@@ -85,8 +85,8 @@ class RAGEngine:
     def get_document_text(self, max_chars: int = 12_000) -> str:
         if not self.vectorstore:
             return ""
-        data = self.vectorstore.get()
-        return "\n\n".join(data.get("documents", []))[:max_chars]
+        docs = list(self.vectorstore.docstore._dict.values())
+        return "\n\n".join(d.page_content for d in docs)[:max_chars]
 
     def summarize(self, summary_type: str = "Executive Summary") -> str:
         text = self.get_document_text()
